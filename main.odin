@@ -63,14 +63,14 @@ main :: proc() {
 	defer sdl.DestroyWindow(window)
 
 	sdl_panic_if(sdl.Init({.VIDEO}) == false)
-	device = sdl.CreateGPUDevice({.SPIRV, .DXIL}, true, nil)
+	device = sdl.CreateGPUDevice({.DXIL}, true, nil)
 	defer sdl.DestroyGPUDevice(device)
 
 	sdl_panic_if(sdl.ClaimWindowForGPUDevice(device, window) == false)
 
 	vertexShader := load_shader(
 	device,
-	"test.vert.spv",
+	"test.vert.dxil",
 	{
 		samplerCount = 0,
 		UBOs         = 1, // For MatrixTransform
@@ -82,7 +82,7 @@ main :: proc() {
 	// For fragment shader (needs sampler in space2 and uniform buffer in space3):
 	fragmentShader := load_shader(
 	device,
-	"test.frag.spv",
+	"test.frag.dxil",
 	{
 		samplerCount = 1, // For the texture sampler
 		UBOs         = 1, // For MultiplyColor
@@ -93,24 +93,6 @@ main :: proc() {
 
 	sdl_panic_if(vertexShader == nil || fragmentShader == nil)
 
-
-	sampler = sdl.CreateGPUSampler(
-		device,
-		sdl.GPUSamplerCreateInfo {
-			min_filter = .NEAREST,
-			mag_filter = .NEAREST,
-			mipmap_mode = .NEAREST,
-			address_mode_u = .CLAMP_TO_EDGE,
-			address_mode_v = .CLAMP_TO_EDGE,
-			address_mode_w = .CLAMP_TO_EDGE,
-		},
-	)
-	sdl_panic_if(sampler == nil)
-	defer sdl.ReleaseGPUSampler(device, sampler) // Add this
-
-
-	texture := load_image("ravioli.bmp")
-	defer sdl.ReleaseGPUTexture(device, texture)
 
 	pipelineInfo := sdl.GPUGraphicsPipelineCreateInfo {
 		target_info = {
@@ -153,10 +135,32 @@ main :: proc() {
 	}
 
 	pipeline = sdl.CreateGPUGraphicsPipeline(device, pipelineInfo)
+	fmt.println("before pipeline", sdl.GetError())
+
 	sdl_panic_if(pipeline == nil)
 
 	sdl.ReleaseGPUShader(device, vertexShader)
 	sdl.ReleaseGPUShader(device, fragmentShader)
+
+
+	sampler = sdl.CreateGPUSampler(
+		device,
+		sdl.GPUSamplerCreateInfo {
+			min_filter = .NEAREST,
+			mag_filter = .NEAREST,
+			mipmap_mode = .NEAREST,
+			address_mode_u = .CLAMP_TO_EDGE,
+			address_mode_v = .CLAMP_TO_EDGE,
+			address_mode_w = .CLAMP_TO_EDGE,
+		},
+	)
+
+	sdl_panic_if(sampler == nil)
+	defer sdl.ReleaseGPUSampler(device, sampler) // Add this
+
+	texture := load_image("ravioli.bmp")
+	defer sdl.ReleaseGPUTexture(device, texture)
+
 
 	indexBuffer := sdl.CreateGPUBuffer(
 		device,
@@ -308,7 +312,7 @@ load_shader :: proc(
 
 	format := sdl.GetGPUShaderFormats(device)
 	entrypoint: cstring
-	if format == {.SPIRV} || format == {.DXIL} {
+	if format >= {.SPIRV} || format >= {.DXIL} {
 		entrypoint = "main"
 	} else {
 		panic("unsupported backend shader format")
@@ -342,7 +346,7 @@ load_image :: proc(path: string) -> ^sdl.GPUTexture {
 
 	img := sdl.LoadBMP(strings.clone_to_cstring(path, allocator = context.temp_allocator))
 
-	fmt.println("before texture", sdl.GetError())
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
 	texture := sdl.CreateGPUTexture(
 		device,
 		sdl.GPUTextureCreateInfo {
@@ -352,10 +356,10 @@ load_image :: proc(path: string) -> ^sdl.GPUTexture {
 			height = u32(img.h),
 			layer_count_or_depth = 1,
 			num_levels = 1,
-			usage = {.SAMPLER},
+			usage = {.SAMPLER, .COLOR_TARGET},
 		},
 	)
-	fmt.println("after texture", sdl.GetError())
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
 
 	// Create a transfer buffer for the image data
 	transferBuffer := sdl.CreateGPUTransferBuffer(
@@ -366,6 +370,7 @@ load_image :: proc(path: string) -> ^sdl.GPUTexture {
 	},
 	)
 	defer sdl.ReleaseGPUTransferBuffer(device, transferBuffer)
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
 
 	// Map the transfer buffer and copy the image data
 	data := sdl.MapGPUTransferBuffer(device, transferBuffer, true)
@@ -375,14 +380,30 @@ load_image :: proc(path: string) -> ^sdl.GPUTexture {
 	// Upload the data to the texture
 	cmdBuf := sdl.AcquireGPUCommandBuffer(device)
 	copyPass := sdl.BeginGPUCopyPass(cmdBuf)
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
+
 	sdl.UploadToGPUTexture(
 		copyPass,
-		sdl.GPUTextureTransferInfo{offset = 0, transfer_buffer = transferBuffer},
-		sdl.GPUTextureRegion{texture = texture, w = u32(img.w), h = u32(img.h)},
+		{offset = 0, transfer_buffer = transferBuffer},
+		{texture = texture, w = u32(img.w), h = u32(img.h), d = 1},
 		true,
 	)
+
+	// sdl.UploadToGPUTexture(
+	// 	copyPass,
+	// 	{
+	// 		transfer_buffer = transferBuffer,
+	// 		offset          = 0, /* Zeros out the rest */
+	// 	},
+	// 	{texture = texture, w = u32(img.w), h = u32(img.h), d = 1},
+	// 	false,
+	// )
+
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
+
 	sdl.EndGPUCopyPass(copyPass)
 	sdl_panic_if(sdl.SubmitGPUCommandBuffer(cmdBuf) == false)
+	fmt.printfln("%s : %s", #location(), sdl.GetError())
 
 	return texture
 }
